@@ -58,11 +58,11 @@ export default function StockApp() {
       if (fData.data?.length > 0) {
         const epsRecs = fData.data.filter((d:any) => d.type.includes('EPS') || d.type.includes('基本每股盈餘'));
         const uDates = Array.from(new Set(epsRecs.map((d:any)=>d.date))).sort().reverse().slice(0,4);
-        const ttmEps = uDates.reduce((sum, date) => sum + (epsRecs.find((r:any)=>r.date===date)?.value || 0), 0);
+        const ttmEps = uDates.reduce((sum: number, date: any) => sum + (epsRecs.find((r:any)=>r.date===date)?.value || 0), 0);
         setEps(Number(ttmEps.toFixed(2)));
 
         const niRecs = fData.data.filter((d:any) => d.type.includes('NetIncome') || d.type.includes('本期淨利'));
-        ttmNetIncome = uDates.reduce((sum, date) => sum + (niRecs.find((r:any)=>r.date===date)?.value || 0), 0);
+        ttmNetIncome = uDates.reduce((sum: number, date: any) => sum + (niRecs.find((r:any)=>r.date===date)?.value || 0), 0);
       }
 
       // 4. 抓資產負債表 (Equity & BVPS)
