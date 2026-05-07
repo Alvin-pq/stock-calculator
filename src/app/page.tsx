@@ -1,6 +1,7 @@
 'use client';
 import { useState } from 'react';
 
+// 常用熱門股票清單
 const popularStocks = [
   { id: '2330', name: '台積電' },
   { id: '2317', name: '鴻海' },
@@ -12,284 +13,200 @@ const popularStocks = [
   { id: '2002', name: '中鋼' },
 ];
 
-export default function StockCalculator() {
+export default function StockApp() {
+  const [activeTab, setActiveTab] = useState('calc'); // 'calc' 或 'learn'
   const [stockId, setStockId] = useState('2330');
   const [isLoading, setIsLoading] = useState(false);
   
+  // 財務數據 State
   const [price, setPrice] = useState<number | string>('');
   const [eps, setEps] = useState<number | string>('');
   const [bvps, setBvps] = useState<number | string>('');
   const [roe, setRoe] = useState<number | string>('');
   const [histPe, setHistPe] = useState<number | string>('');
 
+  // ----------------------------------------------------------------
+  // 核心數據抓取邏輯 (FinMind API)
+  // ----------------------------------------------------------------
   const fetchAllData = async () => {
-    if (!stockId) {
-      alert('請先輸入股票代號');
-      return;
-    }
-    
+    if (!stockId) return alert('請先輸入代號');
     setIsLoading(true);
     try {
       const today = new Date();
-      
-      const past14Days = new Date();
-      past14Days.setDate(today.getDate() - 14);
-      const date14Str = past14Days.toISOString().split('T')[0];
+      const past14D = new Date(new Date().setDate(today.getDate() - 14)).toISOString().split('T')[0];
+      const past3Y = new Date(new Date().setFullYear(today.getFullYear() - 3)).toISOString().split('T')[0];
+      const past2Y = new Date(new Date().setFullYear(today.getFullYear() - 2)).toISOString().split('T')[0];
 
-      const past3Years = new Date();
-      past3Years.setFullYear(today.getFullYear() - 3);
-      const date3YrStr = past3Years.toISOString().split('T')[0];
+      // 1. 抓市價
+      const pRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${stockId}&start_date=${past14D}`);
+      const pData = await pRes.json();
+      if (pData.data?.length > 0) setPrice(pData.data[pData.data.length - 1].close);
 
-      // 財報需要抓取近兩年，以確保能涵蓋完整的「近四個季度」
-      const past2Years = new Date();
-      past2Years.setFullYear(today.getFullYear() - 2);
-      const date2YrStr = past2Years.toISOString().split('T')[0];
-
-      // ==========================================
-      // A. 抓取最新收盤價
-      // ==========================================
-      const priceRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${stockId}&start_date=${date14Str}`);
-      const priceResult = await priceRes.json();
-      
-      if (priceResult.msg === 'success' && priceResult.data.length > 0) {
-        const latestPrice = priceResult.data[priceResult.data.length - 1].close;
-        setPrice(latestPrice);
-      } else {
-        throw new Error('找不到股價資料');
+      // 2. 抓歷史 PE 平均
+      const perRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPER&data_id=${stockId}&start_date=${past3Y}`);
+      const perData = await perRes.json();
+      if (perData.data?.length > 0) {
+        const pes = perData.data.map((d:any) => d.PER).filter((p:number) => p > 0 && p < 100);
+        setHistPe(Number((pes.reduce((a:number,b:number)=>a+b,0)/pes.length).toFixed(2)));
       }
 
-      // ==========================================
-      // B. 抓取歷史本益比並計算「三年平均」
-      // ==========================================
-      const perRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPER&data_id=${stockId}&start_date=${date3YrStr}`);
-      const perResult = await perRes.json();
-      
-      if (perResult.msg === 'success' && perResult.data.length > 0) {
-        const validPEs = perResult.data.map((d: any) => d.PER).filter((pe: number) => pe > 0 && pe < 100);
-        if (validPEs.length > 0) {
-          const avgPE = validPEs.reduce((a: number, b: number) => a + b, 0) / validPEs.length;
-          setHistPe(Number(avgPE.toFixed(2)));
-        }
-      }
-
-      // ==========================================
-      // C. 抓取綜合損益表 (計算 EPS 與 淨利)
-      // ==========================================
-      const finRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${stockId}&start_date=${date2YrStr}`);
-      const finResult = await finRes.json();
-
-      // ==========================================
-      // D. 抓取資產負債表 (計算 ROE 分母與淨值)
-      // ==========================================
-      const bsRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockBalanceSheet&data_id=${stockId}&start_date=${date2YrStr}`);
-      const bsResult = await bsRes.json();
-
-      let epsMessage = "";
+      // 3. 抓損益表 (EPS & Net Income)
+      const fRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockFinancialStatements&data_id=${stockId}&start_date=${past2Y}`);
+      const fData = await fRes.json();
       let ttmNetIncome = 0;
-      let latestEquity = 0;
 
-      // 處理損益表數據
-      if (finResult.msg === 'success' && finResult.data.length > 0) {
-        const finData = finResult.data;
-        
-        // 1. 結算近四季 EPS 總和
-        const epsRecords = finData.filter((d: any) => d.type === 'EPS' || String(d.type).includes('基本每股盈餘') || String(d.origin_name).includes('基本每股盈餘'));
-        if (epsRecords.length > 0) {
-          const uniqueDates = Array.from(new Set(epsRecords.map((d: any) => d.date))).sort((a: any, b: any) => new Date(b).getTime() - new Date(a).getTime());
-          
-          let ttmEps = 0;
-          let quartersFound = 0;
-          for (let i = 0; i < Math.min(4, uniqueDates.length); i++) {
-            const record = epsRecords.find((d: any) => d.date === uniqueDates[i]);
-            if (record) {
-              ttmEps += record.value;
-              quartersFound++;
-            }
-          }
-          if (ttmEps !== 0) {
-            setEps(Number(ttmEps.toFixed(2)));
-            epsMessage += `\n📊 成功結算近 ${quartersFound} 季 EPS 總和：${ttmEps.toFixed(2)} 元`;
-          }
-        }
+      if (fData.data?.length > 0) {
+        const epsRecs = fData.data.filter((d:any) => d.type.includes('EPS') || d.type.includes('基本每股盈餘'));
+        const uDates = Array.from(new Set(epsRecs.map((d:any)=>d.date))).sort().reverse().slice(0,4);
+        const ttmEps = uDates.reduce((sum, date) => sum + (epsRecs.find((r:any)=>r.date===date)?.value || 0), 0);
+        setEps(Number(ttmEps.toFixed(2)));
 
-        // 2. 結算近四季「本期淨利」總和 (為了推算 ROE)
-        const incomeRecords = finData.filter((d: any) => d.type === 'IncomeAfterTaxes' || String(d.type).includes('本期淨利') || String(d.origin_name).includes('本期淨利'));
-        if (incomeRecords.length > 0) {
-          const uniqueDates = Array.from(new Set(incomeRecords.map((d: any) => d.date))).sort((a: any, b: any) => new Date(b).getTime() - new Date(a).getTime());
-          for (let i = 0; i < Math.min(4, uniqueDates.length); i++) {
-            const record = incomeRecords.find((d: any) => d.date === uniqueDates[i]);
-            if (record) {
-              ttmNetIncome += record.value;
-            }
-          }
-        }
+        const niRecs = fData.data.filter((d:any) => d.type.includes('NetIncome') || d.type.includes('本期淨利'));
+        ttmNetIncome = uDates.reduce((sum, date) => sum + (niRecs.find((r:any)=>r.date===date)?.value || 0), 0);
       }
 
-      // 處理資產負債表數據
-      if (bsResult.msg === 'success' && bsResult.data.length > 0) {
-        const bsData = bsResult.data;
-        
-        // 3. 抓取每股淨值
-        const bvpsRecords = bsData.filter((d: any) => String(d.type).includes('每股參考淨值') || String(d.type).includes('每股淨值') || String(d.origin_name).includes('每股淨值'));
-        if (bvpsRecords.length > 0) {
-           bvpsRecords.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-           setBvps(Number(bvpsRecords[0].value).toFixed(2));
-        }
+      // 4. 抓資產負債表 (Equity & BVPS)
+      const bRes = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockBalanceSheet&data_id=${stockId}&start_date=${past2Y}`);
+      const bData = await bRes.json();
+      if (bData.data?.length > 0) {
+        const sorted = bData.data.sort((a:any,b:any)=>new Date(b.date).getTime()-new Date(a.date).getTime());
+        const latestBv = sorted.find((d:any)=>d.type.includes('每股淨值') || d.type.includes('每股參考淨值'));
+        if (latestBv) setBvps(Number(latestBv.value).toFixed(2));
 
-        // 4. 抓取最新一季的「權益總計」
-        const equityRecords = bsData.filter((d: any) => d.type === 'TotalEquity' || String(d.type).includes('權益總計') || String(d.type).includes('權益總額') || String(d.origin_name).includes('權益總計'));
-        if (equityRecords.length > 0) {
-           equityRecords.sort((a: any, b: any) => new Date(b.date).getTime() - new Date(a.date).getTime());
-           latestEquity = equityRecords[0].value;
-        }
+        const latestEq = sorted.find((d:any)=>d.type.includes('TotalEquity') || d.type.includes('權益總計'));
+        if (latestEq && ttmNetIncome) setRoe(Number(((ttmNetIncome/latestEq.value)*100).toFixed(2)));
       }
-
-      // 5. 自動計算近四季 ROE (近四季淨利 ÷ 最新權益總計)
-      if (ttmNetIncome !== 0 && latestEquity !== 0) {
-         const calculatedRoe = (ttmNetIncome / latestEquity) * 100;
-         setRoe(Number(calculatedRoe.toFixed(2)));
-         epsMessage += `\n🎯 成功推算近四季 ROE：${calculatedRoe.toFixed(2)}%`;
-      }
-
-      alert(`✅ 成功載入 ${stockId} 數據！${epsMessage}\n\n⚠️ 提醒：程式已自動加總近四季報表，特殊產業(如金融股)之會計科目若有差異，建議對照公開資訊觀測站微調。`);
-
-    } catch (error) {
-      console.error('API 呼叫失敗:', error);
-      alert('⚠️ 抓取資料發生錯誤，請確認股票代號是否正確。');
-    } finally {
-      setIsLoading(false);
-    }
+      alert(`✅ ${stockId} 數據自動結算完成！`);
+    } catch (e) { alert('抓取失敗，請檢查代號'); }
+    finally { setIsLoading(false); }
   };
 
   const numPrice = Number(price) || 0;
   const numEps = Number(eps) || 0;
-  const numBvps = Number(bvps) || 0;
   const numHistPe = Number(histPe) || 0;
-
-  const isDataReady = numPrice > 0 && numEps > 0 && numHistPe > 0;
-
-  const pe = numEps > 0 ? numPrice / numEps : 0;
-  const pb = numBvps > 0 ? numPrice / numBvps : 0;
   const reasonablePrice = numEps * numHistPe;
-  const isUndervalued = numPrice < reasonablePrice;
 
   return (
-    <div className="min-h-screen bg-slate-50 p-4 font-sans text-slate-800 pb-12">
-      <div className="max-w-md mx-auto bg-white rounded-2xl shadow-xl overflow-hidden md:max-w-2xl border border-slate-100">
-        <div className="p-6">
-          <h1 className="text-2xl font-black text-center text-slate-800 mb-6 tracking-tight">股票基本面與估值系統</h1>
-          
-          {/* 抓取區 */}
-          <div className="bg-blue-50 p-5 rounded-xl mb-6 border border-blue-200 shadow-sm">
-            <h2 className="text-lg font-bold text-blue-900 mb-3 flex items-center gap-2">
-              <span>📡</span> 雲端數據中心 (FinMind API)
-            </h2>
-            
-            <div className="flex flex-col gap-2 mb-3">
+    <div className="min-h-screen bg-slate-50 font-sans text-slate-800 pb-20">
+      {/* 頂部切換 Tab */}
+      <div className="sticky top-0 z-20 bg-white border-b border-slate-200 px-4 pt-4 shadow-sm">
+        <div className="max-w-md mx-auto flex gap-4">
+          <button 
+            onClick={() => setActiveTab('calc')}
+            className={`flex-1 pb-3 text-sm font-bold transition-all ${activeTab === 'calc' ? 'border-b-4 border-blue-600 text-blue-600' : 'text-slate-400'}`}
+          >
+            📊 計算工具
+          </button>
+          <button 
+            onClick={() => setActiveTab('learn')}
+            className={`flex-1 pb-3 text-sm font-bold transition-all ${activeTab === 'learn' ? 'border-b-4 border-indigo-600 text-indigo-600' : 'text-slate-400'}`}
+          >
+            📖 邏輯教學
+          </button>
+        </div>
+      </div>
+
+      <div className="max-w-md mx-auto p-4 mt-2">
+        {activeTab === 'calc' ? (
+          /* ==================== 分頁一：計算工具 ==================== */
+          <div className="space-y-6">
+            <div className="bg-blue-600 p-5 rounded-2xl text-white shadow-lg">
+              <h2 className="text-xs font-bold opacity-80 mb-1">雲端數據中心</h2>
               <div className="flex gap-2">
-                <select 
-                  onChange={e => {
-                    if(e.target.value) setStockId(e.target.value);
-                  }}
-                  className="block w-1/3 rounded-lg border-blue-300 shadow-sm focus:border-blue-600 focus:ring-blue-600 p-2.5 border font-bold text-blue-900 bg-white"
-                >
-                  <option value="">快速選擇...</option>
-                  {popularStocks.map(stock => (
-                    <option key={stock.id} value={stock.id}>{stock.id} {stock.name}</option>
-                  ))}
+                <select onChange={e => e.target.value && setStockId(e.target.value)} className="w-1/3 rounded-xl p-2.5 text-slate-900 font-bold bg-white/90">
+                  <option value="">快速選擇</option>
+                  {popularStocks.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
                 </select>
-                <input 
-                  type="text" 
-                  value={stockId} 
-                  onChange={e => setStockId(e.target.value)} 
-                  placeholder="或手動輸入代號"
-                  className="block w-2/3 rounded-lg border-blue-300 shadow-sm focus:border-blue-600 focus:ring-blue-600 p-2.5 border font-bold text-blue-900" 
-                />
+                <input type="text" value={stockId} onChange={e => setStockId(e.target.value)} className="w-2/3 rounded-xl p-2.5 bg-white/20 border border-white/30 placeholder-white/50 font-bold outline-none focus:bg-white/30" placeholder="代號" />
               </div>
-              <button 
-                onClick={fetchAllData}
-                disabled={isLoading}
-                className="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg shadow transition-colors disabled:bg-blue-400"
-              >
-                {isLoading ? '運算中...' : '全面抓取財報與市價'}
+              <button onClick={fetchAllData} disabled={isLoading} className="w-full mt-3 bg-white text-blue-700 font-black py-3 rounded-xl shadow-md active:scale-95 transition-all">
+                {isLoading ? '數據讀取中...' : '一鍵全自動更新數據'}
               </button>
             </div>
-            <p className="text-xs text-blue-700 mt-2 font-medium">系統將自動調閱「綜合損益表」與「資產負債表」，推算年化數據。</p>
-          </div>
 
-          {/* 輸入區 */}
-          <div className="bg-slate-100 p-5 rounded-xl mb-6 border border-slate-200 shadow-inner">
-            <h2 className="text-lg font-bold text-slate-700 mb-4 border-b border-slate-300 pb-2">Step 1: 確認財報與估值數據</h2>
-            <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">目前股價 (市價, 元)</label>
-                <input type="number" value={price} onChange={e => setPrice(e.target.value)} placeholder="等待抓取..." className="block w-full rounded-lg border-slate-300 p-2.5 border bg-white" />
-              </div>
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-1">近四季 EPS (元)</label>
-                  <input type="number" value={eps} onChange={e => setEps(e.target.value)} placeholder="等待推算..." className="block w-full rounded-lg border-slate-300 p-2.5 border bg-white" />
+            <div className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <h2 className="text-lg font-bold mb-4 border-b pb-2 text-slate-700">自動結算數據</h2>
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="bg-slate-50 p-3 rounded-xl">
+                    <label className="text-[10px] font-bold text-slate-400 block uppercase">目前市價</label>
+                    <input type="number" value={price} onChange={e=>setPrice(e.target.value)} className="w-full bg-transparent font-bold text-xl text-slate-800 outline-none" />
+                  </div>
+                  <div className="bg-slate-50 p-3 rounded-xl">
+                    <label className="text-[10px] font-bold text-slate-400 block uppercase">近四季 EPS</label>
+                    <input type="number" value={eps} onChange={e=>setEps(e.target.value)} className="w-full bg-transparent font-bold text-xl text-slate-800 outline-none" />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-sm font-bold text-slate-700 mb-1">每股淨值 (元)</label>
-                  <input type="number" value={bvps} onChange={e => setBvps(e.target.value)} placeholder="等待抓取..." className="block w-full rounded-lg border-slate-300 p-2.5 border bg-white" />
+                <div className="bg-indigo-50 p-3 rounded-xl border border-indigo-100">
+                  <label className="text-[10px] font-bold text-indigo-400 block uppercase">歷史 3 年平均本益比 (估值分母)</label>
+                  <input type="number" value={histPe} onChange={e=>setHistPe(e.target.value)} className="w-full bg-transparent font-bold text-xl text-indigo-900 outline-none" />
                 </div>
               </div>
-              <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">股東權益報酬率 ROE (%)</label>
-                <input type="number" value={roe} onChange={e => setRoe(e.target.value)} placeholder="等待自動推算..." className="block w-full rounded-lg border-slate-300 p-2.5 border bg-white" />
-              </div>
-              <div className="pt-2">
-                <label className="block text-sm font-bold text-indigo-800 mb-1">歷史常態本益比 (近三年平均)</label>
-                <input type="number" value={histPe} onChange={e => setHistPe(e.target.value)} placeholder="等待抓取..." className="block w-full rounded-lg border-indigo-300 p-2.5 border bg-indigo-50 font-bold text-indigo-900" />
+            </div>
+
+            <div className={`p-6 rounded-3xl shadow-xl text-white transition-all ${numPrice < reasonablePrice ? 'bg-gradient-to-br from-green-500 to-emerald-600' : 'bg-gradient-to-br from-slate-700 to-slate-800'}`}>
+              <h2 className="font-bold opacity-90 text-sm mb-1">🎯 理論合理股價 (P/E 估值法)</h2>
+              <div className="text-5xl font-black mb-4 tracking-tighter">{reasonablePrice > 0 ? reasonablePrice.toFixed(1) : '--'} <span className="text-lg font-normal">元</span></div>
+              <div className="bg-white/10 p-3 rounded-xl text-xs font-medium leading-relaxed">
+                {numPrice > 0 && reasonablePrice > 0 ? (
+                  numPrice < reasonablePrice ? `📍 目前股價 ${numPrice} 低於合理價，具備安全邊際。` : `📍 目前股價 ${numPrice} 高於合理價。`
+                ) : '請先點擊上方按鈕抓取數據'}
               </div>
             </div>
           </div>
-
-          {/* 估值結果區 */}
-          <div className="bg-gradient-to-br from-indigo-600 to-blue-700 p-5 rounded-xl mb-6 shadow-md text-white">
-            <h2 className="text-lg font-bold mb-2 flex items-center gap-2">
-              <span>🎯</span> 合理股價估值 (本益比法)
-            </h2>
+        ) : (
+          /* ==================== 分頁二：邏輯教學 ==================== */
+          <div className="space-y-5">
+            <h2 className="text-2xl font-black text-slate-800 px-2">投資邏輯手冊</h2>
             
-            {isDataReady ? (
-              <>
-                <div className="flex items-end gap-2 mb-3">
-                  <span className="text-4xl font-black tracking-tight">{reasonablePrice.toFixed(2)}</span>
-                  <span className="text-indigo-100 mb-1 font-medium">元</span>
-                </div>
-                <div className="bg-black/20 p-3 rounded-lg text-sm space-y-1 backdrop-blur-sm">
-                  <p><span className="font-bold text-indigo-200">計算公式：</span>近四季 EPS × 歷史三年常態本益比</p>
-                </div>
-                <div className={`mt-4 p-3 rounded-lg font-bold text-sm text-center shadow-inner ${isUndervalued ? 'bg-green-500 text-white' : 'bg-red-500 text-white'}`}>
-                  📍 診斷：目前市價 ({numPrice}) {isUndervalued ? '低於' : '高於'}推算的合理價。
-                </div>
-              </>
-            ) : (
-              <div className="p-4 bg-white/10 rounded-lg text-center border border-white/20 border-dashed">
-                <p className="text-indigo-100 font-medium tracking-wide">請先完成 Step 1 資料輸入與抓取</p>
+            <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-3 mb-3 text-blue-600">
+                <i className="fa-solid fa-chart-pie text-xl"></i>
+                <h3 className="font-bold text-lg">1. 每股盈餘 (EPS)</h3>
               </div>
-            )}
-          </div>
+              <p className="text-sm font-bold text-slate-500 bg-slate-50 p-2 rounded mb-3">公式：稅後淨利 ÷ 發行股數</p>
+              <p className="text-sm leading-relaxed text-slate-600">
+                <span className="font-bold text-slate-800">意義：</span>公司為每一股賺了多少錢。<br/>
+                <span className="font-bold text-slate-800">本App邏輯：</span>自動抓取近兩年損益表，結算最新的連續四個季度總和 (TTM)，排除單季季節性誤差。
+              </p>
+            </section>
 
-          {/* 核心指標卡片 */}
-          <h2 className="text-lg font-bold text-slate-700 mb-4 border-b border-slate-300 pb-2">Step 2: 目前估值位階</h2>
-          <div className="grid grid-cols-2 gap-4">
-            <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm">
-              <h3 className="font-bold text-slate-600 text-sm mb-1">當前本益比 (P/E)</h3>
-              <div className="text-2xl font-black text-slate-800">
-                {numEps > 0 && numPrice > 0 ? `${pe.toFixed(2)} 倍` : <span className="text-slate-300 text-lg">---</span>}
+            <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-3 mb-3 text-green-600">
+                <i className="fa-solid fa-hourglass-half text-xl"></i>
+                <h3 className="font-bold text-lg">2. 本益比 (P/E)</h3>
               </div>
-            </div>
-            <div className="p-4 rounded-xl border border-slate-200 bg-white shadow-sm">
-              <h3 className="font-bold text-slate-600 text-sm mb-1">當前股價淨值比 (P/B)</h3>
-              <div className="text-2xl font-black text-slate-800">
-                {numBvps > 0 && numPrice > 0 ? `${pb.toFixed(2)} 倍` : <span className="text-slate-300 text-lg">---</span>}
-              </div>
-            </div>
-          </div>
+              <p className="text-sm font-bold text-slate-500 bg-slate-50 p-2 rounded mb-3">公式：股價 ÷ EPS</p>
+              <p className="text-sm leading-relaxed text-slate-600">
+                <span className="font-bold text-slate-800">意義：</span>預計的回本年數。<br/>
+                <span className="font-bold text-slate-800">本App邏輯：</span>系統抓取過去 3 年（約 750 個交易日）的日資料，計算平均數作為「歷史常態評價」，避免用單一數字死板套用。
+              </p>
+            </section>
 
-        </div>
+            <section className="bg-white p-5 rounded-2xl shadow-sm border border-slate-100">
+              <div className="flex items-center gap-3 mb-3 text-purple-600">
+                <i className="fa-solid fa-bolt text-xl"></i>
+                <h3 className="font-bold text-lg">3. 股東權益報酬率 (ROE)</h3>
+              </div>
+              <p className="text-sm font-bold text-slate-500 bg-slate-50 p-2 rounded mb-3">公式：(淨利 ÷ 權益總計) × 100%</p>
+              <p className="text-sm leading-relaxed text-slate-600">
+                <span className="font-bold text-slate-800">意義：</span>資本運用的效率。巴菲特指標建議長期大於 15%。<br/>
+                <span className="font-bold text-slate-800">本App邏輯：</span>自動抓取最新資產負債表與近四季淨利進行即時結算。
+              </p>
+            </section>
+
+            <section className="bg-indigo-600 p-6 rounded-2xl text-white">
+              <h3 className="font-bold text-lg mb-2">💡 如何使用合理價？</h3>
+              <p className="text-sm opacity-90 leading-relaxed mb-4">
+                系統計算出的合理價是根據「歷史評價」與「目前获利」的中值。
+              </p>
+              <div className="bg-white/10 p-4 rounded-xl space-y-2 text-xs">
+                <p>✅ <strong>便宜價：</strong>合理價 × 0.8 (安全邊際)</p>
+                <p>✅ <strong>昂貴價：</strong>合理價 × 1.2 (考慮獲利了結)</p>
+              </div>
+            </section>
+          </div>
+        )}
       </div>
     </div>
   );
