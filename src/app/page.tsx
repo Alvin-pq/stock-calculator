@@ -2,11 +2,49 @@
 import { useState } from 'react';
 
 export default function StockCalculator() {
+  const [stockId, setStockId] = useState('2330'); // 新增：股票代號
+  const [isLoading, setIsLoading] = useState(false); // 新增：載入狀態
+  
   const [price, setPrice] = useState(100);
   const [shares, setShares] = useState(1000);
   const [netIncome, setNetIncome] = useState(5000);
   const [equity, setEquity] = useState(20000);
   const [histPe, setHistPe] = useState(15);
+
+  // 串接 FinMind API 獲取最新收盤價
+  const fetchLatestPrice = async () => {
+    if (!stockId) {
+      alert('請先輸入股票代號');
+      return;
+    }
+    
+    setIsLoading(true);
+    try {
+      // 設定抓取時間範圍：往前推算 14 天，確保一定能跨越週末或連假抓到最近一個交易日
+      const today = new Date();
+      const pastDate = new Date();
+      pastDate.setDate(today.getDate() - 14);
+      const dateString = pastDate.toISOString().split('T')[0];
+
+      // 呼叫 FinMind 開源 API (免金鑰可獲取基礎股價)
+      const response = await fetch(`https://api.finmindtrade.com/api/v4/data?dataset=TaiwanStockPrice&data_id=${stockId}&start_date=${dateString}`);
+      const result = await response.json();
+
+      if (result.msg === 'success' && result.data.length > 0) {
+        // 取得陣列中最後一筆資料（即最新交易日）
+        const latestData = result.data[result.data.length - 1];
+        setPrice(latestData.close);
+        alert(`✅ 成功載入 ${stockId} 最新收盤價：${latestData.close} 元\n(交易日期: ${latestData.date})`);
+      } else {
+        alert('❌ 找不到該股票代號的報價，請確認代號是否正確。');
+      }
+    } catch (error) {
+      console.error('API 呼叫失敗:', error);
+      alert('⚠️ 網路連線或 API 伺服器異常，請稍後再試。');
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   // 避免除以零的保護機制
   const safeDiv = (num: number, denom: number) => (denom === 0 ? 0 : num / denom);
@@ -18,7 +56,7 @@ export default function StockCalculator() {
   const pb = safeDiv(price, bvps);
   const roe = safeDiv(netIncome, equity) * 100;
   
-  // 合理股價計算 (本益比估價法)
+  // 合理股價計算
   const reasonablePrice = eps * histPe;
   const isUndervalued = price < reasonablePrice;
 
@@ -28,13 +66,37 @@ export default function StockCalculator() {
         <div className="p-6">
           <h1 className="text-2xl font-black text-center text-slate-800 mb-6 tracking-tight">股票基本面與估值系統</h1>
           
+          {/* 【新增】FinMind 自動報價區 */}
+          <div className="bg-blue-50 p-5 rounded-xl mb-6 border border-blue-200 shadow-sm">
+            <h2 className="text-lg font-bold text-blue-900 mb-3 flex items-center gap-2">
+              <span>📡</span> 雲端即時抓價 (FinMind API)
+            </h2>
+            <div className="flex gap-2">
+              <input 
+                type="text" 
+                value={stockId} 
+                onChange={e => setStockId(e.target.value)} 
+                placeholder="輸入台股代號 (例: 2330)"
+                className="block w-full rounded-lg border-blue-300 shadow-sm focus:border-blue-600 focus:ring-blue-600 p-2.5 border font-bold text-blue-900" 
+              />
+              <button 
+                onClick={fetchLatestPrice}
+                disabled={isLoading}
+                className="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2.5 px-4 rounded-lg shadow transition-colors disabled:bg-blue-400 whitespace-nowrap"
+              >
+                {isLoading ? '載入中...' : '抓取市價'}
+              </button>
+            </div>
+            <p className="text-xs text-blue-700 mt-2 font-medium">使用開源資料庫，自動獲取最近一日收盤價。</p>
+          </div>
+
           {/* 輸入區 */}
           <div className="bg-slate-100 p-5 rounded-xl mb-6 border border-slate-200 shadow-inner">
-            <h2 className="text-lg font-bold text-slate-700 mb-4 border-b border-slate-300 pb-2">Step 1: 輸入財報數據</h2>
+            <h2 className="text-lg font-bold text-slate-700 mb-4 border-b border-slate-300 pb-2">Step 1: 確認與輸入財報數據</h2>
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-bold text-slate-700 mb-1">目前股價 (市價, 元)</label>
-                <input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} className="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-600 focus:ring-blue-600 p-2.5 border" />
+                <label className="block text-sm font-bold text-slate-700 mb-1">目前股價 (市價, 元) <span className="text-blue-600 text-xs font-normal ml-2">*(可由上方自動抓取)*</span></label>
+                <input type="number" value={price} onChange={e => setPrice(Number(e.target.value))} className="block w-full rounded-lg border-slate-300 shadow-sm focus:border-blue-600 focus:ring-blue-600 p-2.5 border bg-white" />
               </div>
               <div>
                 <label className="block text-sm font-bold text-slate-700 mb-1">發行股數 (股)</label>
